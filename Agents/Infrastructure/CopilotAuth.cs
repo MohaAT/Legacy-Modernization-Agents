@@ -104,18 +104,22 @@ public static class CopilotAuth
         if (resolution.Token is not null)
         {
             options.GitHubToken = resolution.Token;
-            return options;
         }
 
-        if (resolution.HiddenVariables.Count > 0)
+        if (resolution.Token is not null || resolution.HiddenVariables.Count > 0)
         {
             // Setting Environment replaces the runtime's whole environment, so pass everything else through.
             var environment = new Dictionary<string, string>(StringComparer.Ordinal);
             foreach (System.Collections.DictionaryEntry entry in Environment.GetEnvironmentVariables())
             {
-                if (entry.Key is string key && entry.Value is string value && !resolution.HiddenVariables.Contains(key, StringComparer.OrdinalIgnoreCase))
+                if (entry.Key is string key && entry.Value is string value &&
+                    !resolution.HiddenVariables.Contains(key, StringComparer.OrdinalIgnoreCase) &&
+                    !(resolution.Token is not null && AmbientTokenVariables.Contains(key, StringComparer.OrdinalIgnoreCase)))
                     environment[key] = value;
             }
+            // Also give the CLI the selected credential for pre-session calls such as models.list.
+            if (resolution.Token is not null)
+                environment[TokenVariable] = resolution.Token;
             options.Environment = environment;
         }
         return options;

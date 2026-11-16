@@ -473,8 +473,9 @@ public class ProcessManager : IDisposable
             "azureopenai" => "AzureOpenAI",
             "githubcopilot" or "githubcopilotsdk" or "copilotsdk" => "GitHubCopilot",
             "openai" => "OpenAI",
+            "lmstudio" => "LMStudio",
             _ => throw new ArgumentException(
-                $"Unsupported provider '{provider}'. Use AzureOpenAI, GitHubCopilot or OpenAI.")
+                $"Unsupported provider '{provider}'. Use AzureOpenAI, GitHubCopilot, OpenAI or LMStudio.")
         };
     }
 }

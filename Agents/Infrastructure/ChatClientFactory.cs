@@ -55,9 +55,15 @@ public static class ChatClientFactory
             "openai" =>
                 CreateOpenAIChatClient(settings.ApiKey, model, logger),
 
+            "lmstudio" =>
+                new OpenAIClient(
+                    new System.ClientModel.ApiKeyCredential(string.IsNullOrWhiteSpace(settings.ApiKey) ? "lm-studio" : settings.ApiKey),
+                    new OpenAIClientOptions { Endpoint = new Uri(settings.Endpoint) })
+                    .GetChatClient(model).AsIChatClient(),
+
             _ => throw new ArgumentException(
                 $"Unsupported AI service type: '{settings.ServiceType}'. " +
-                "Supported values: AzureOpenAI, GitHubCopilotSDK, OpenAI.",
+                "Supported values: AzureOpenAI, GitHubCopilotSDK, OpenAI, LMStudio.",
                 nameof(settings))
         };
     }
@@ -73,8 +79,9 @@ public static class ChatClientFactory
         // of falling through. Chat deliberately falls back to the code model rather than to
         // ChatDeploymentName: a deployment name is an Azure concept and means nothing to the
         // Copilot SDK, which resolves models by catalogue id.
-        var chatEndpoint = Coalesce(settings.ChatEndpoint, settings.Endpoint);
-        var chatApiKey = Coalesce(settings.ChatApiKey, settings.ApiKey);
+        var isLocal = string.Equals(settings.ServiceType, "LMStudio", StringComparison.OrdinalIgnoreCase);
+        var chatEndpoint = isLocal ? settings.Endpoint : Coalesce(settings.ChatEndpoint, settings.Endpoint);
+        var chatApiKey = isLocal ? settings.ApiKey : Coalesce(settings.ChatApiKey, settings.ApiKey);
         var chatModel = settings.ResolveChatModelId();
         var serviceType = string.IsNullOrWhiteSpace(settings.ServiceType) ? "AzureOpenAI" : settings.ServiceType.Trim();
 
@@ -207,7 +214,12 @@ public static class ChatClientFactory
         {
             if (CopilotAuth.ValidateToken(githubToken) is { } problem)
                 throw new InvalidOperationException(problem);
-            options = new CopilotClientOptions { Mode = CopilotClientMode.CopilotCli, GitHubToken = githubToken };
+            options = CopilotAuth.CreateClientOptions(name => name switch
+            {
+                CopilotAuth.ModeVariable => "token",
+                CopilotAuth.TokenVariable => githubToken,
+                _ => Environment.GetEnvironmentVariable(name)
+            });
             logger?.LogInformation("Creating GitHub Copilot SDK chat client for model: {Model} (explicit token)", modelId);
         }
         else
@@ -238,6 +250,18 @@ public static class ChatClientFactory
         ILogger? logger = null,
         string? serviceType = null)
     {
+        if (string.Equals(serviceType ?? Environment.GetEnvironmentVariable("AZURE_OPENAI_SERVICE_TYPE"),
+            "LMStudio", StringComparison.OrdinalIgnoreCase))
+        {
+            return CreateFromSettings(new AISettings
+            {
+                ServiceType = "LMStudio",
+                Endpoint = Environment.GetEnvironmentVariable("AZURE_OPENAI_ENDPOINT") ?? endpoint ?? "",
+                ApiKey = Environment.GetEnvironmentVariable("AZURE_OPENAI_API_KEY") ?? apiKey,
+                ModelId = modelId
+            }, logger: logger);
+        }
+
         if (string.Equals(serviceType, "GitHubCopilot", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(serviceType, "GitHubCopilotSDK", StringComparison.OrdinalIgnoreCase))
         {

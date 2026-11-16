@@ -31,7 +31,7 @@ async function fetchModelCatalog() {
     const providerSelect = document.getElementById('mc-provider-select');
     if (providerSelect && data.serviceType) {
       const val = (data.serviceType === 'GitHubCopilot' || data.serviceType === 'GitHubCopilotSDK')
-        ? 'GitHubCopilot' : 'AzureOpenAI';
+        ? 'GitHubCopilot' : data.serviceType === 'LMStudio' ? 'LMStudio' : 'AzureOpenAI';
       providerSelect.value = val;
     }
 
@@ -59,7 +59,7 @@ function initMissionControl() {
   if (providerSelect) {
     providerSelect.addEventListener('change', () => {
       // Open the setup modal so user can connect to the new provider
-      if (typeof openSetupModal === 'function') openSetupModal();
+      if (typeof openSetupModal === 'function') openSetupModal(providerSelect.value === 'GitHubCopilot' ? 'GitHubCopilotSDK' : providerSelect.value);
     });
   }
 

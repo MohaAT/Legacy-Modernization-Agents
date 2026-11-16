@@ -28,6 +28,8 @@ public static class ModelPreflight
         var requested = modelIds
             .Where(id => !string.IsNullOrWhiteSpace(id))
             .Select(id => id.Trim())
+            // Auto is a routing choice, not a named model in the catalogue.
+            .Where(id => !id.Equals("auto", StringComparison.OrdinalIgnoreCase))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 

@@ -77,7 +77,12 @@ load_env_file() {
                         expanded_value=$(printf '%s' "$var_value" | envsubst)
                         export "$var_name=$expanded_value"
                     else
-                        # Fallback: assign literal value without expansion
+                        # The shipped mappings must also work without gettext/envsubst.
+                        local ref
+                        for ref in _MAIN_ENDPOINT _MAIN_API_KEY _CHAT_MODEL _CODE_MODEL; do
+                            var_value="${var_value//"\${$ref}"/"${!ref}"}"
+                            var_value="${var_value//"\$$ref"/"${!ref}"}"
+                        done
                         export "$var_name=$var_value"
                     fi
                     log_info "Set $var_name"
@@ -113,6 +118,18 @@ validate_config() {
             fi
         done
 
+        return $errors
+    fi
+
+    # LM Studio uses one OpenAI-compatible endpoint and no Azure deployment/key.
+    if [[ "${AZURE_OPENAI_SERVICE_TYPE}" == "LMStudio" ]]; then
+        for var in AZURE_OPENAI_ENDPOINT AISETTINGS__MODELID; do
+            if [[ -z "${!var}" || "${!var}" == *"your-"* || "${!var}" == *"placeholder"* ]]; then
+                log_error "Configure $var for LM Studio"
+                ((errors++))
+            fi
+        done
+        log_info "Provider: LM Studio (shared endpoint: ${AZURE_OPENAI_ENDPOINT})"
         return $errors
     fi
     

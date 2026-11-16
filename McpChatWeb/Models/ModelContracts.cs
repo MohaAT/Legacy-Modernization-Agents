@@ -17,7 +17,8 @@ public sealed record ConnectProviderRequest(
     string ServiceType,            // "AzureOpenAI" | "GitHubCopilotSDK"
     string? Endpoint = null,       // Azure OpenAI endpoint URL
     string? ApiKey = null,         // Azure API key or GitHub PAT
-    bool UseDefaultCredential = false  // true = use az login / gh auth login
+    bool UseDefaultCredential = false, // true = use az login / copilot login
+    bool UseAutoModel = false          // Copilot Auto (Free/Student); no named-model discovery
 );
 
 public sealed record SaveModelConfigRequest(

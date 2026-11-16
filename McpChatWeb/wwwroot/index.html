@@ -100,6 +100,7 @@
             <select id="mc-provider-select" class="mc-select">
               <option value="AzureOpenAI">☁️ Azure OpenAI</option>
               <option value="GitHubCopilot">🤖 GitHub Copilot SDK</option>
+              <option value="LMStudio">💻 LM Studio</option>
             </select>
             <select id="mc-model-select" class="mc-select">
               <!-- Populated dynamically by JS based on provider -->
@@ -1241,6 +1242,7 @@ curl http://localhost:5028/api/data-retrieval-guide</code></pre>
         <div class="setup-tabs">
           <button class="setup-tab setup-tab-active" data-provider="AzureOpenAI">☁️ Azure OpenAI</button>
           <button class="setup-tab" data-provider="GitHubCopilotSDK">🤖 GitHub Copilot SDK</button>
+          <button class="setup-tab" data-provider="LMStudio">💻 LM Studio</button>
         </div>
 
         <!-- Azure OpenAI Tab -->
@@ -1276,6 +1278,20 @@ curl http://localhost:5028/api/data-retrieval-guide</code></pre>
         <!-- GitHub Copilot SDK Tab -->
         <div id="setup-GitHubCopilotSDK" class="setup-tab-content">
           <div class="setup-field">
+            <label>Model selection</label>
+            <div class="setup-auth-options">
+              <label class="setup-auth-option">
+                <input type="radio" name="copilot-model-mode" value="auto" checked>
+                Auto — Copilot chooses (Free/Student)
+              </label>
+              <label class="setup-auth-option">
+                <input type="radio" name="copilot-model-mode" value="named">
+                Choose specific models (eligible plans)
+              </label>
+            </div>
+            <div class="setup-help">Copilot Free and Student use Auto for both chat and code. Paid plans can also use Auto or select available models. Sign-in, usage limits, and organization policies still apply.</div>
+          </div>
+          <div class="setup-field">
             <label>Authentication</label>
             <div class="setup-auth-options">
               <label class="setup-auth-option">
@@ -1297,6 +1313,20 @@ curl http://localhost:5028/api/data-retrieval-guide</code></pre>
           </div>
 
           <button class="setup-connect-btn" id="copilot-connect-btn">🔌 Connect</button>
+        </div>
+
+        <!-- LM Studio Tab -->
+        <div id="setup-LMStudio" class="setup-tab-content" style="display: none;">
+          <div class="setup-field">
+            <label>Endpoint URL (shared by all local models)</label>
+            <input type="text" id="lmstudio-endpoint" value="http://localhost:1234/v1">
+            <div class="setup-help">Start the LM Studio server and load a model. Chat and code use this same endpoint. The portal keeps its existing address.</div>
+          </div>
+          <div class="setup-field">
+            <label>API token (optional)</label>
+            <input type="password" id="lmstudio-apikey" placeholder="Leave empty if server authentication is disabled">
+          </div>
+          <button class="setup-connect-btn" id="lmstudio-connect-btn">🔌 Connect</button>
         </div>
 
         <!-- Status -->

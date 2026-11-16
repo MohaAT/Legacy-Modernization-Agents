@@ -23,6 +23,9 @@ function initModelSetupModal() {
   const copilotConnectBtn = document.getElementById('copilot-connect-btn');
   if (copilotConnectBtn) copilotConnectBtn.addEventListener('click', connectCopilot);
 
+  const localConnectBtn = document.getElementById('lmstudio-connect-btn');
+  if (localConnectBtn) localConnectBtn.addEventListener('click', connectLMStudio);
+
   // Save button
   const saveBtn = document.getElementById('setup-save-btn');
   if (saveBtn) saveBtn.addEventListener('click', saveSetupConfig);
@@ -46,6 +49,14 @@ function initModelSetupModal() {
     radio.addEventListener('change', () => {
       const patGroup = document.getElementById('copilot-pat-group');
       if (patGroup) patGroup.style.display = radio.value === 'pat' ? 'block' : 'none';
+    });
+  });
+
+  document.querySelectorAll('input[name="copilot-model-mode"]').forEach(radio => {
+    radio.addEventListener('change', () => {
+      setSetupModelList([]);
+      document.getElementById('setup-save-btn').disabled = true;
+      setSetupStatus('Click Connect to use the selected model mode.');
     });
   });
 
@@ -74,7 +85,7 @@ setTimeout(checkNeedsSetup, 800);
 
 // ── Modal open/close ─────────────────────────────────────────────────────────
 
-function openSetupModal() {
+async function openSetupModal(provider) {
   const modal = document.getElementById('modelSetupModal');
   if (modal) {
     modal.style.display = 'block';
@@ -82,6 +93,40 @@ function openSetupModal() {
     setSetupStatus('');
     setSetupModelList([]);
     document.getElementById('setup-save-btn').disabled = true;
+    try {
+      const res = await fetch('/api/models/available');
+      if (!res.ok) return;
+      const data = await res.json();
+      const configuredProvider = data.serviceType === 'GitHubCopilot' ? 'GitHubCopilotSDK' : data.serviceType;
+      const selectedProvider = typeof provider === 'string' ? provider : configuredProvider;
+      switchSetupTab(selectedProvider || 'AzureOpenAI');
+      if (selectedProvider === configuredProvider) {
+        const endpointInput = document.getElementById(configuredProvider === 'LMStudio' ? 'lmstudio-endpoint' : 'azure-endpoint');
+        if (endpointInput && data.connectedEndpoint) endpointInput.value = data.connectedEndpoint;
+        if (configuredProvider === 'AzureOpenAI') {
+          const mode = data.useDefaultCredential ? 'azlogin' : 'apikey';
+          const radio = document.querySelector(`input[name="azure-auth"][value="${mode}"]`);
+          if (radio) { radio.checked = true; radio.dispatchEvent(new Event('change')); }
+        }
+        if (configuredProvider === 'GitHubCopilotSDK') {
+          const auto = (!data.chatModelId || data.chatModelId.toLowerCase() === 'auto') &&
+            (!data.codeModelId || data.codeModelId.toLowerCase() === 'auto');
+          const modelMode = document.querySelector(`input[name="copilot-model-mode"][value="${auto ? 'auto' : 'named'}"]`);
+          if (modelMode) modelMode.checked = true;
+          const mode = data.copilotAuthMode === 'token' ? 'pat' : 'cli';
+          const radio = document.querySelector(`input[name="copilot-auth"][value="${mode}"]`);
+          if (radio) { radio.checked = true; radio.dispatchEvent(new Event('change')); }
+        }
+        setSetupModelList(data.models || []);
+        const chat = document.getElementById('setup-chat-model');
+        const code = document.getElementById('setup-code-model');
+        if (chat && data.chatModelId) chat.value = data.chatModelId;
+        if (code && data.codeModelId) code.value = data.codeModelId;
+        document.getElementById('setup-save-btn').disabled = !(data.models?.length > 0);
+      }
+    } catch (err) {
+      setSetupStatus(`Could not load saved settings: ${err.message}`, true);
+    }
   }
 }
 
@@ -103,6 +148,39 @@ function switchSetupTab(provider) {
   if (content) content.style.display = 'block';
 
   _setupServiceType = provider;
+  setSetupModelList([]);
+  document.getElementById('setup-save-btn').disabled = true;
+}
+
+async function connectLMStudio() {
+  const btn = document.getElementById('lmstudio-connect-btn');
+  btn.disabled = true;
+  setSetupStatus('Connecting to LM Studio...');
+  try {
+    const res = await fetch('/api/models/connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        serviceType: 'LMStudio',
+        endpoint: document.getElementById('lmstudio-endpoint').value.trim() || 'http://localhost:1234/v1',
+        apiKey: document.getElementById('lmstudio-apikey').value.trim() || null
+      })
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) {
+      setSetupStatus(data.error || 'Could not connect to LM Studio.', true);
+      return;
+    }
+    _setupModels = data.models;
+    _setupServiceType = 'LMStudio';
+    setSetupModelList(data.models);
+    document.getElementById('setup-save-btn').disabled = false;
+    setSetupStatus(`Connected to LM Studio. Found ${data.modelCount} model(s).`);
+  } catch (err) {
+    setSetupStatus(`LM Studio connection failed: ${err.message}`, true);
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 // ── Connect: Azure OpenAI ────────────────────────────────────────────────────
@@ -179,6 +257,7 @@ async function connectCopilot() {
   const btn = document.getElementById('copilot-connect-btn');
   const authMethod = document.querySelector('input[name="copilot-auth"]:checked')?.value || 'cli';
   const pat = document.getElementById('copilot-pat').value.trim();
+  const useAutoModel = document.querySelector('input[name="copilot-model-mode"]:checked')?.value !== 'named';
 
   if (authMethod === 'pat' && !pat) {
     setSetupStatus('Please enter your GitHub personal access token.', true);
@@ -200,7 +279,8 @@ async function connectCopilot() {
       body: JSON.stringify({
         serviceType: 'GitHubCopilotSDK',
         apiKey: authMethod === 'pat' ? pat : null,
-        useDefaultCredential: authMethod === 'cli'
+        useDefaultCredential: authMethod === 'cli',
+        useAutoModel
       })
     });
 
@@ -214,7 +294,9 @@ async function connectCopilot() {
     if (data.authenticated && data.models) {
       _setupModels = data.models;
       _setupServiceType = 'GitHubCopilotSDK';
-      setSetupStatus(`✅ Connected! Found ${data.modelCount} model(s).`);
+      setSetupStatus(useAutoModel
+        ? '✅ Signed in. Auto will let Copilot choose the model for chat and code. Account limits still apply.'
+        : `✅ Connected! Found ${data.modelCount} model(s).`);
       setSetupModelList(data.models);
       document.getElementById('setup-save-btn').disabled = false;
     }
@@ -249,6 +331,9 @@ function setSetupModelList(models) {
   const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 
   let html = '<div class="setup-model-roles">';
+  const onlyAuto = (_setupServiceType === 'GitHubCopilotSDK' || _setupServiceType === 'GitHubCopilot') &&
+    models.length === 1 && models[0].id.toLowerCase() === 'auto';
+  if (onlyAuto) html += '<div class="setup-help">Auto selects the model for each request. Both roles use Copilot Auto; no named model selection is required.</div>';
   html += '<div class="setup-role-row">';
   html += '<label class="setup-role-label">💬 Chat Model (portal Q&A, reasoning):</label>';
   html += '<select id="setup-chat-model" class="setup-model-select">';
@@ -282,6 +367,10 @@ function setSetupModelList(models) {
   html += '</div>';
 
   container.innerHTML = html;
+  if (onlyAuto) {
+    document.getElementById('setup-chat-model').disabled = true;
+    document.getElementById('setup-code-model').disabled = true;
+  }
 
   // Auto-select best defaults
   autoSelectDefaults(models);
@@ -323,9 +412,13 @@ async function saveSetupConfig() {
   btn.textContent = '💾 Saving...';
 
   try {
-    const endpoint = document.getElementById('azure-endpoint')?.value?.trim() || null;
+    const isLocal = _setupServiceType === 'LMStudio';
+    const endpoint = isLocal
+      ? (document.getElementById('lmstudio-endpoint').value.trim() || 'http://localhost:1234/v1')
+      : document.getElementById('azure-endpoint')?.value?.trim() || null;
     const authMethod = document.querySelector('input[name="azure-auth"]:checked')?.value;
-    const apiKey = _setupServiceType === 'AzureOpenAI'
+    const apiKey = isLocal ? document.getElementById('lmstudio-apikey').value.trim() || null
+      : _setupServiceType === 'AzureOpenAI'
       ? (authMethod === 'apikey' ? document.getElementById('azure-apikey')?.value?.trim() : null)
       : (document.querySelector('input[name="copilot-auth"]:checked')?.value === 'pat'
           ? document.getElementById('copilot-pat')?.value?.trim() : null);
@@ -335,9 +428,10 @@ async function saveSetupConfig() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         serviceType: _setupServiceType,
-        endpoint: _setupServiceType === 'AzureOpenAI' ? endpoint : null,
+        endpoint: (_setupServiceType === 'AzureOpenAI' || isLocal) ? endpoint : null,
         apiKey,
-        useDefaultCredential: _setupServiceType === 'AzureOpenAI' && authMethod === 'azlogin',
+        useDefaultCredential: (_setupServiceType === 'AzureOpenAI' && authMethod === 'azlogin') ||
+          (_setupServiceType === 'GitHubCopilotSDK' && document.querySelector('input[name="copilot-auth"]:checked')?.value === 'cli'),
         chatModelId: chatModel,
         codeModelId: codeModel
       })
@@ -345,7 +439,7 @@ async function saveSetupConfig() {
 
     const data = await res.json();
 
-    if (data.success) {
+    if (res.ok && data.success && data.configSaved !== false) {
       setSetupStatus('✅ Configuration saved! Reloading models...');
       btn.textContent = '✅ Saved';
 

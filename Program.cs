@@ -303,20 +303,33 @@ internal static class Program
     private static Command BuildListModelsCommand(ILoggerFactory loggerFactory)
     {
         var listModelsCommand = new Command("list-models", "List available models from the configured AI provider");
+        var autoOption = new Option<bool>("--auto", "Check Copilot authentication for automatic model selection");
+        listModelsCommand.AddOption(autoOption);
 
-        listModelsCommand.SetHandler(async () =>
+        listModelsCommand.SetHandler(async (bool useAuto) =>
         {
             var logger = loggerFactory.CreateLogger("ListModels");
 
             // list-models always uses Copilot SDK — it's only called during
-            // './doctor.sh setup' before config is written, so don't check
-            // AZURE_OPENAI_SERVICE_TYPE (it will be AzureOpenAI at this point).
+            // './doctor.sh setup' before the new config is saved, so don't check
+            // AZURE_OPENAI_SERVICE_TYPE from the previous provider configuration.
             try
             {
                 var auth = CobolToQuarkusMigration.Agents.Infrastructure.CopilotAuth.Resolve();
                 Console.WriteLine($"Querying models via GitHub Copilot SDK (auth: {auth.Description})...");
                 using var client = new CopilotClient(CobolToQuarkusMigration.Agents.Infrastructure.CopilotAuth.Apply(
                     new CopilotClientOptions { Mode = CopilotClientMode.CopilotCli }, auth));
+                if (useAuto)
+                {
+                    using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                    await client.StartAsync(timeout.Token);
+                    var status = await client.GetAuthStatusAsync(timeout.Token);
+                    if (status.IsAuthenticated != true)
+                        throw new InvalidOperationException(status.StatusMessage ?? "Copilot is not authenticated. Sign in before using Auto.");
+                    Console.WriteLine("Available selection (Copilot chooses the model):");
+                    Console.WriteLine("  • auto");
+                    return;
+                }
                 var models = await client.ListModelsAsync();
                 Console.WriteLine($"Available models ({models.Count}):");
                 foreach (var model in models.OrderBy(m => m.Name))
@@ -331,7 +344,7 @@ internal static class Program
                 Console.WriteLine($"Error: {ex.Message}");
                 Console.WriteLine("Sign in with 'copilot login', or set COPILOT_GITHUB_TOKEN to a fine-grained token with the 'Copilot Requests' permission.");
             }
-        });
+        }, autoOption);
 
         return listModelsCommand;
     }
@@ -1104,9 +1117,17 @@ internal static class Program
         }
 
         var apiKey = Environment.GetEnvironmentVariable("AZURE_OPENAI_API_KEY");
-        if (!string.IsNullOrEmpty(apiKey))
+        if (apiKey is not null)
         {
             aiSettings.ApiKey = apiKey;
+        }
+
+        if (aiSettings.ServiceType.Equals("LMStudio", StringComparison.OrdinalIgnoreCase))
+        {
+            // All local models use the same server and credentials, including chat.
+            aiSettings.ApiKey = apiKey ?? "";
+            aiSettings.ChatEndpoint = aiSettings.Endpoint;
+            aiSettings.ChatApiKey = aiSettings.ApiKey;
         }
 
         var deploymentName = Environment.GetEnvironmentVariable("AZURE_OPENAI_DEPLOYMENT_NAME");
@@ -1418,22 +1439,28 @@ internal static class Program
             var isGitHubCopilotSdk = serviceType.Equals("GitHubCopilotSDK", StringComparison.OrdinalIgnoreCase) ||
                                      serviceType.Equals("GitHubCopilot", StringComparison.OrdinalIgnoreCase);
             var isDirectOpenAI = serviceType.Equals("OpenAI", StringComparison.OrdinalIgnoreCase);
+            var isLocal = serviceType.Equals("LMStudio", StringComparison.OrdinalIgnoreCase);
             var isAzure = serviceType.Equals("AzureOpenAI", StringComparison.OrdinalIgnoreCase);
 
             var requiredSettings = new Dictionary<string, string?>();
             var invalidSettings = new List<string>();
 
-            if (!isGitHubCopilotSdk && !isDirectOpenAI && !isAzure)
+            if (!isGitHubCopilotSdk && !isDirectOpenAI && !isAzure && !isLocal)
             {
                 // "GitHub"/"GitHubModels" used to pass here and then fail inside ChatClientFactory;
                 // there is no GitHub Models client.
                 invalidSettings.Add(
-                    $"AZURE_OPENAI_SERVICE_TYPE '{serviceType}' is not supported. Use AzureOpenAI, GitHubCopilot or OpenAI.");
+                    $"AZURE_OPENAI_SERVICE_TYPE '{serviceType}' is not supported. Use AzureOpenAI, GitHubCopilot, OpenAI or LMStudio.");
             }
 
             if (isGitHubCopilotSdk)
             {
                 // GitHub Copilot SDK: only needs model ID, authentication handled by CLI
+                requiredSettings["AZURE_OPENAI_MODEL_ID"] = Environment.GetEnvironmentVariable("AZURE_OPENAI_MODEL_ID");
+            }
+            else if (isLocal)
+            {
+                requiredSettings["AZURE_OPENAI_ENDPOINT"] = Environment.GetEnvironmentVariable("AZURE_OPENAI_ENDPOINT");
                 requiredSettings["AZURE_OPENAI_MODEL_ID"] = Environment.GetEnvironmentVariable("AZURE_OPENAI_MODEL_ID");
             }
             else if (isDirectOpenAI)

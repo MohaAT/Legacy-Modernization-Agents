@@ -74,7 +74,8 @@ async function loadModels() {
       select.innerHTML = '';
 
       if (data.models && data.models.length > 0) {
-        const provider = data.serviceType === 'GitHubCopilot' ? '🤖 GitHub Copilot SDK' : '☁️ Azure OpenAI';
+        const provider = (data.serviceType === 'GitHubCopilot' || data.serviceType === 'GitHubCopilotSDK')
+          ? '🤖 GitHub Copilot SDK' : data.serviceType === 'LMStudio' ? '💻 LM Studio' : '☁️ Azure OpenAI';
         const group = document.createElement('optgroup');
         group.label = provider;
 
@@ -104,7 +105,7 @@ async function loadModels() {
     const mcProvider = document.getElementById('mc-provider-select');
     if (mcProvider) {
       const providerValue = (data.serviceType === 'GitHubCopilot' || data.serviceType === 'GitHubCopilotSDK')
-        ? 'GitHubCopilot' : 'AzureOpenAI';
+        ? 'GitHubCopilot' : data.serviceType === 'LMStudio' ? 'LMStudio' : 'AzureOpenAI';
       mcProvider.value = providerValue;
     }
 

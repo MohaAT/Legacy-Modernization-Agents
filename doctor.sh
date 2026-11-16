@@ -470,10 +470,12 @@ launch_mcp_web_ui() {
     local port="${MCP_WEB_PORT:-$DEFAULT_MCP_PORT}"
     local url="http://$host:$port"
 
-    # Ensure AI env is loaded (chat vs responses) before launching portal/MCP
-    if ! load_configuration || ! load_ai_config; then
-        echo -e "${RED}❌ Failed to load AI configuration. Portal launch aborted.${NC}"
+    # Keep setup reachable when the saved AI configuration needs correcting.
+    if ! load_configuration; then
         return 1
+    fi
+    if ! load_ai_config; then
+        echo -e "${YELLOW}⚠️  AI configuration needs updating. Open AI Provider Setup in the portal.${NC}"
     fi
 
     echo ""
@@ -757,6 +759,17 @@ check_ai_connectivity() {
     echo ""
     echo -e "${BLUE}🔌 Pre-Check: AI Service Connectivity${NC}"
     echo "======================================="
+
+    if [[ "${AZURE_OPENAI_SERVICE_TYPE}" == "LMStudio" ]]; then
+        local local_args=(--silent --show-error --fail --connect-timeout 5 --max-time 15)
+        [[ -n "${AZURE_OPENAI_API_KEY}" ]] && local_args+=(-H "Authorization: Bearer ${AZURE_OPENAI_API_KEY}")
+        if curl "${local_args[@]}" "${AZURE_OPENAI_ENDPOINT%/}/models" >/dev/null; then
+            echo -e "${GREEN}✅ LM Studio reachable at ${AZURE_OPENAI_ENDPOINT}${NC}"
+            return 0
+        fi
+        echo -e "${RED}❌ Cannot connect to LM Studio at ${AZURE_OPENAI_ENDPOINT}. Start its local server and load a model.${NC}"
+        return 1
+    fi
 
     # GitHub Copilot SDK uses the Copilot CLI, not Azure endpoints
     if [[ "${AZURE_OPENAI_SERVICE_TYPE}" == "GitHubCopilot" ]]; then
@@ -1066,6 +1079,10 @@ run_doctor() {
                     echo -e "  ${YELLOW}⚠️  AISETTINGS__CHATMODELID not set (will use code model)${NC}"
                 fi
 
+            elif [[ "$service_type" == "LMStudio" ]]; then
+                echo -e "  ${GREEN}✅ LM Studio${NC}"
+                echo "  Shared endpoint: ${AZURE_OPENAI_ENDPOINT}"
+                echo "  Authentication: optional local server token"
             else
                 echo -e "  ${GREEN}✅ ${service_type:-AzureOpenAI}${NC}"
 
@@ -1339,15 +1356,14 @@ run_setup() {
         return 1
     fi
 
-    SETUP_PREVIOUS_CONFIG=""
-    if [[ -f "$LOCAL_CONFIG" ]]; then
-        SETUP_PREVIOUS_CONFIG="$(mktemp)"
-        cp "$LOCAL_CONFIG" "$SETUP_PREVIOUS_CONFIG"
-        trap 'rm -f "$SETUP_PREVIOUS_CONFIG"; trap - RETURN' RETURN
-    fi
-
-    cp "$TEMPLATE_CONFIG" "$LOCAL_CONFIG"
-    echo -e "${GREEN}✅ Created: $LOCAL_CONFIG${NC}"
+    # Work on a draft. Ctrl+C or an error must leave the saved configuration intact.
+    SETUP_PREVIOUS_CONFIG="$LOCAL_CONFIG"
+    local setup_draft
+    setup_draft="$(mktemp "$REPO_ROOT/Config/.ai-config.setup.XXXXXX")" || return 1
+    trap 'rm -f "$setup_draft" "$setup_draft.bak"; trap - RETURN' RETURN
+    LOCAL_CONFIG="$setup_draft"
+    cp "$TEMPLATE_CONFIG" "$LOCAL_CONFIG" || return 1
+    echo -e "${GREEN}✅ Preparing configuration for: $SETUP_PREVIOUS_CONFIG${NC}"
     echo ""
 
     # Interactive configuration
@@ -1359,12 +1375,67 @@ run_setup() {
     echo "Select your AI provider:"
     echo -e "  ${GREEN}1)${NC} Azure OpenAI / Azure AI Foundry (default)"
     echo -e "  ${GREEN}2)${NC} GitHub Copilot SDK (requires Copilot CLI in PATH)"
+    echo -e "  ${GREEN}3)${NC} LM Studio (local server)"
     echo ""
     read -p "Choice [1]: " provider_choice
     provider_choice=${provider_choice:-1}
     echo ""
 
-    if [[ "$provider_choice" == "2" ]]; then
+    if [[ "$provider_choice" == "3" ]]; then
+        local lm_endpoint lm_key lm_chat lm_code
+        read -r -p "LM Studio endpoint for all models [http://localhost:1234/v1]: " lm_endpoint
+        lm_endpoint="${lm_endpoint:-http://localhost:1234/v1}"
+        lm_endpoint="${lm_endpoint%/}"
+        if [[ "$lm_endpoint" != http://* && "$lm_endpoint" != https://* ]]; then
+            echo -e "${RED}❌ Enter a full HTTP or HTTPS endpoint.${NC}"
+            return 1
+        fi
+        read -r -s -p "LM Studio API token (leave empty if disabled): " lm_key
+        echo ""
+        read -r -p "Chat model ID (as shown in LM Studio): " lm_chat
+        if [[ -z "$lm_chat" ]]; then
+            echo -e "${RED}❌ A local model ID is required.${NC}"
+            return 1
+        fi
+        read -r -p "Code model ID [$lm_chat]: " lm_code
+        lm_code="${lm_code:-$lm_chat}"
+        cat > "$LOCAL_CONFIG" <<EOF
+# LM Studio: every model uses the same local server.
+AZURE_OPENAI_SERVICE_TYPE="LMStudio"
+_MAIN_ENDPOINT="$lm_endpoint"
+_MAIN_API_KEY="$lm_key"
+_CHAT_MODEL="$lm_chat"
+_CODE_MODEL="$lm_code"
+AZURE_OPENAI_ENDPOINT="$lm_endpoint"
+AZURE_OPENAI_CHAT_ENDPOINT="$lm_endpoint"
+AZURE_OPENAI_API_KEY="$lm_key"
+AZURE_OPENAI_CHAT_API_KEY="$lm_key"
+AZURE_OPENAI_MODEL_ID="$lm_code"
+AZURE_OPENAI_DEPLOYMENT_NAME="$lm_code"
+AZURE_OPENAI_CHAT_MODEL_ID="$lm_chat"
+AZURE_OPENAI_CHAT_DEPLOYMENT_NAME="$lm_chat"
+AISETTINGS__ENDPOINT="$lm_endpoint"
+AISETTINGS__CHATENDPOINT="$lm_endpoint"
+AISETTINGS__APIKEY="$lm_key"
+AISETTINGS__CHATAPIKEY="$lm_key"
+AISETTINGS__MODELID="$lm_code"
+AISETTINGS__DEPLOYMENTNAME="$lm_code"
+AISETTINGS__CHATMODELID="$lm_chat"
+AISETTINGS__CHATDEPLOYMENTNAME="$lm_chat"
+NEO4J_PASSWORD="cobol-rekt-2026"
+COBOL_SOURCE_FOLDER="source"
+EOF
+        for role in COBOL_ANALYZER JAVA_CONVERTER DEPENDENCY_MAPPER UNIT_TEST; do
+            printf 'AZURE_OPENAI_%s_MODEL="%s"\n' "$role" "$lm_code" >> "$LOCAL_CONFIG"
+        done
+        restore_unowned_config_keys "$SETUP_PREVIOUS_CONFIG" "$LOCAL_CONFIG" || return 1
+        mv "$LOCAL_CONFIG" "$SETUP_PREVIOUS_CONFIG" || return 1
+        LOCAL_CONFIG="$SETUP_PREVIOUS_CONFIG"
+        echo -e "${GREEN}✅ LM Studio configuration saved: $LOCAL_CONFIG${NC}"
+        ensure_neo4j_image || return 1
+        ensure_graph_populator_environment || return 1
+        return 0
+    elif [[ "$provider_choice" == "2" ]]; then
         # --- GitHub Copilot SDK setup ---
         echo -e "${BLUE}🐙 GitHub Copilot SDK Configuration${NC}"
         echo ""
@@ -1482,25 +1553,36 @@ run_setup() {
         local copilot_auth_mode="login"
         [[ -n "$ghcp_token" ]] && copilot_auth_mode="token"
 
+        local auto_choice use_copilot_auto=false
+        local model_list_args=()
+        read -r -p "Use Auto model selection? (required for Copilot Free/Student) [Y/n]: " auto_choice
+        if [[ ! "$auto_choice" =~ ^[Nn]$ ]]; then
+            use_copilot_auto=true
+            model_list_args+=(--auto)
+        fi
+
         # Get available models from GitHub Copilot (user-specific)
-        echo -e "${BLUE}📋 Fetching available models for your account...${NC}"
+        echo -e "${BLUE}📋 Checking Copilot model access for your account...${NC}"
         echo ""
         local models_raw list_output
         # Run list-models and extract only "  • model-id" lines
         list_output=$(COPILOT_AUTH="$copilot_auth_mode" COPILOT_GITHUB_TOKEN="$ghcp_token" \
-            "$DOTNET_CMD" run --project "$REPO_ROOT/CobolToQuarkusMigration.csproj" -- list-models 2>&1)
+            "$DOTNET_CMD" run --project "$REPO_ROOT/CobolToQuarkusMigration.csproj" -- list-models "${model_list_args[@]}" 2>&1)
         models_raw=$(printf '%s\n' "$list_output" | grep '•' | sed 's/.*•[[:space:]]*//' | awk '!seen[$0]++')
 
-        # Fallback to copilot CLI static list if SDK call fails
+        # Keep setup usable when discovery fails; the interactive CLI fallback can hang.
         if [[ -z "$models_raw" ]]; then
-            echo -e "${YELLOW}⚠️  Could not fetch user-specific models, falling back to CLI model list${NC}"
+            echo -e "${YELLOW}⚠️  Could not fetch models. You can enter model IDs manually; authentication must be corrected before running.${NC}"
             local reason
             reason=$(printf '%s\n' "$list_output" | grep -E 'error|Error|failed|Failed' | grep -v 'warning' | head -3)
             [[ -n "$reason" ]] && printf '%s\n' "$reason" | cut -c1-240 | sed 's/^/   /'
             if printf '%s\n' "$list_output" | grep -q 'MSB3923'; then
                 echo -e "${YELLOW}   The build could not download the Copilot CLI. See docs/building-behind-an-npm-registry-block.md.${NC}"
             fi
-            models_raw=$(copilot --model invalid 2>&1 | grep -o 'Allowed choices are .*' | sed 's/Allowed choices are //' | tr ',' '\n' | sed 's/[[:space:]]*//g' | sed 's/\.$//')
+            if [[ "$use_copilot_auto" == true ]]; then
+                echo -e "${RED}❌ Could not verify Copilot authentication for Auto. Your saved configuration is unchanged.${NC}"
+                return 1
+            fi
         fi
 
         local models=()
@@ -1515,7 +1597,10 @@ run_setup() {
         echo -e "${CYAN}the migration strategy. A strong reasoning model works best here.${NC}"
         echo ""
 
-        if [[ ${#models[@]} -gt 0 ]]; then
+        if [[ "$use_copilot_auto" == true ]]; then
+            ghcp_chat_model="auto"
+            echo "Auto — Copilot chooses the model. Free/Student limits and account policies still apply."
+        elif [[ ${#models[@]} -gt 0 ]]; then
             local i=1
             for m in "${models[@]}"; do
                 echo "  $i) $m"
@@ -1534,8 +1619,8 @@ run_setup() {
                 ghcp_chat_model="${models[0]}"
             fi
         else
-            read -p "Chat model name (default: claude-sonnet-4): " ghcp_chat_model
-            ghcp_chat_model=${ghcp_chat_model:-claude-sonnet-4}
+            read -p "Chat model name (default: auto): " ghcp_chat_model
+            ghcp_chat_model=${ghcp_chat_model:-auto}
         fi
 
         echo ""
@@ -1548,7 +1633,10 @@ run_setup() {
         echo -e "${CYAN}It writes classes, methods, and tests. A model optimized for code${NC}"
         echo -e "${CYAN}generation can improve output quality and compilation success rates.${NC}"
         echo ""
-        read -p "Use a different model for code generation? (y/N): " -r
+        REPLY="N"
+        if [[ "$use_copilot_auto" != true ]]; then
+            read -p "Use a different model for code generation? (y/N): " -r
+        fi
         echo ""
 
         if [[ $REPLY =~ ^[Yy]$ ]]; then
@@ -1570,8 +1658,8 @@ run_setup() {
                     ghcp_code_model="${models[0]}"
                 fi
             else
-                read -p "Code model name (default: claude-sonnet-4): " ghcp_code_model
-                ghcp_code_model=${ghcp_code_model:-claude-sonnet-4}
+                read -p "Code model name (default: auto): " ghcp_code_model
+                ghcp_code_model=${ghcp_code_model:-auto}
             fi
         else
             ghcp_code_model="$ghcp_chat_model"
@@ -1585,7 +1673,7 @@ run_setup() {
         # Preserve anything already configured: these values may be the only ones that open
         # the existing Neo4j volumes, and setup rewrites this file wholesale.
         local existing_neo4j existing_source
-        # Read from the snapshot: the live file is already the template at this point.
+        # The saved file remains unchanged while setup works on its draft.
         existing_neo4j=$(read_local_config_value NEO4J_PASSWORD "${SETUP_PREVIOUS_CONFIG:-/dev/null}")
         existing_source=$(read_local_config_value COBOL_SOURCE_FOLDER "${SETUP_PREVIOUS_CONFIG:-/dev/null}")
 
@@ -1666,7 +1754,10 @@ COPILOT_GITHUB_TOKEN="$ghcp_token"
 EOF
         fi
 
-        restore_unowned_config_keys "$SETUP_PREVIOUS_CONFIG" "$LOCAL_CONFIG"
+        restore_unowned_config_keys "$SETUP_PREVIOUS_CONFIG" "$LOCAL_CONFIG" || return 1
+
+        mv "$LOCAL_CONFIG" "$SETUP_PREVIOUS_CONFIG" || return 1
+        LOCAL_CONFIG="$SETUP_PREVIOUS_CONFIG"
 
         echo ""
         echo -e "${GREEN}✅ GitHub Copilot SDK configuration written!${NC}"
@@ -1739,7 +1830,10 @@ EOF
 
     # Clean up backup file
     rm -f "$LOCAL_CONFIG.bak"
-    restore_unowned_config_keys "$SETUP_PREVIOUS_CONFIG" "$LOCAL_CONFIG"
+    restore_unowned_config_keys "$SETUP_PREVIOUS_CONFIG" "$LOCAL_CONFIG" || return 1
+
+    mv "$LOCAL_CONFIG" "$SETUP_PREVIOUS_CONFIG" || return 1
+    LOCAL_CONFIG="$SETUP_PREVIOUS_CONFIG"
 
     echo ""
     echo -e "${GREEN}✅ Configuration completed!${NC}"
@@ -1941,7 +2035,10 @@ run_test() {
     echo ""
     echo "Checking model deployments..."
     if load_configuration >/dev/null 2>&1 && load_ai_config >/dev/null 2>&1; then
-        if [[ "${AZURE_OPENAI_SERVICE_TYPE}" == "GitHubCopilot" ]]; then
+        if [[ "${AZURE_OPENAI_SERVICE_TYPE}" == "LMStudio" ]]; then
+            echo -e "${GREEN}✅ Using LM Studio — no Azure deployment check needed${NC}"
+            echo "  Shared endpoint: ${AZURE_OPENAI_ENDPOINT}"
+        elif [[ "${AZURE_OPENAI_SERVICE_TYPE}" == "GitHubCopilot" ]]; then
             echo -e "${GREEN}✅ Using GitHub Copilot SDK — no Azure deployment check needed${NC}"
             echo -e "  Model: ${AISETTINGS__MODELID:-not set}"
         else
